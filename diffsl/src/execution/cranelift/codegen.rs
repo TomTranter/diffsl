@@ -1690,12 +1690,11 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             let constants_slice = self.layout.constants();
             let x_first = self.fconst(constants_slice[info.x_offset]);
             let x_last = self.fconst(constants_slice[info.x_offset + n - 1]);
+            let q_raw = q;
             let q = self.builder.ins().fmin(q, x_last);
             let q = self.builder.ins().fmax(q, x_first);
 
             let dx_val = self.fconst(dx);
-            let slope_uniform = self
-                .fconst((constants_slice[info.y_offset + 1] - constants_slice[info.y_offset]) / dx);
 
             let q_minus_x0 = self.builder.ins().fsub(q, x_first);
             let k_float = self.builder.ins().fdiv(q_minus_x0, dx_val);
@@ -1707,12 +1706,6 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             let k = self.builder.ins().select(cond_lt, zero, k);
             let cond_gt = self.builder.ins().icmp(IntCC::SignedGreaterThan, k, nm2);
             let k = self.builder.ins().select(cond_gt, nm2, k);
-
-            if is_tangent {
-                let dq =
-                    self.jit_compile_expr(name, &call.args[dq_idx], index, elmt, expr_index)?;
-                return Ok(self.builder.ins().fmul(dq, slope_uniform));
-            }
 
             let constants_ptr = self
                 .builder
@@ -1740,6 +1733,23 @@ impl<'ctx, M: Module> CraneliftCodeGen<'ctx, M> {
             let k_float2 = self.builder.ins().fcvt_from_sint(self.real_type, k);
             let t = self.builder.ins().fsub(k_float, k_float2);
             let dy = self.builder.ins().fsub(yk1, yk);
+
+            if is_tangent {
+                // The slope of the segment q falls in, not the first one: the
+                // value is piecewise linear, so its derivative is piecewise
+                // constant. Outside [x_first, x_last] the value is clamped, so
+                // the derivative there is zero.
+                let dq =
+                    self.jit_compile_expr(name, &call.args[dq_idx], index, elmt, expr_index)?;
+                let slope = self.builder.ins().fdiv(dy, dx_val);
+                let below = self.builder.ins().fcmp(FloatCC::LessThan, q_raw, x_first);
+                let above = self.builder.ins().fcmp(FloatCC::GreaterThan, q_raw, x_last);
+                let outside = self.builder.ins().bor(below, above);
+                let zero_f = self.fconst(0.0);
+                let slope = self.builder.ins().select(outside, zero_f, slope);
+                return Ok(self.builder.ins().fmul(dq, slope));
+            }
+
             let tdy = self.builder.ins().fmul(t, dy);
             return Ok(self.builder.ins().fadd(yk, tdy));
         }

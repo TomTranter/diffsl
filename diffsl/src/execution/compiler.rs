@@ -1424,6 +1424,8 @@ mod tests {
     generate_tests!(test_reset_gradients);
     generate_tests!(test_reset_without_reset_tensor_is_noop);
     generate_tests!(test_interp1d_autodiff_input_uniform);
+    generate_tests!(test_interp1d_autodiff_input_uniform_later_segment);
+    generate_tests!(test_interp1d_autodiff_input_uniform_beyond_table);
     generate_tests!(test_interp1d_autodiff_input_nonuniform);
     generate_tests!(test_interp1d_autodiff_state);
 
@@ -1542,6 +1544,58 @@ mod tests {
     }
 
     #[allow(dead_code)]
+    /// The derivative must be the slope of the segment the point falls in.
+    /// The test above only probes the first segment, where the two agree.
+    fn test_interp1d_autodiff_input_uniform_later_segment<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
+        // p = 15 sits in the second segment, [10, 20]: value 10, slope 1.0.
+        run_interp1d_autodiff::<M, T>(
+            "
+                in { p = 15 }
+                xs_i { 0.0, 10.0, 20.0 }
+                ys_i { 1.0,  5.0, 15.0 }
+                u_i { z = 1 }
+                F_i { z }
+                out { z }
+                r { interp1d(xs_i, ys_i, p) }
+            ",
+            15.0,
+            0.0,
+            10.0,
+            1.0,
+            0.0,
+            true,
+            true,
+        );
+    }
+
+    /// Beyond the table the value is clamped, so the derivative is zero.
+    fn test_interp1d_autodiff_input_uniform_beyond_table<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >() {
+        run_interp1d_autodiff::<M, T>(
+            "
+                in { p = 25 }
+                xs_i { 0.0, 10.0, 20.0 }
+                ys_i { 1.0,  5.0, 15.0 }
+                u_i { z = 1 }
+                F_i { z }
+                out { z }
+                r { interp1d(xs_i, ys_i, p) }
+            ",
+            25.0,
+            0.0,
+            15.0,
+            0.0,
+            0.0,
+            true,
+            true,
+        );
+    }
+
     fn test_interp1d_autodiff_input_uniform<
         M: CodegenModuleCompile + CodegenModuleJit,
         T: Scalar + RelativeEq,
