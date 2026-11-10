@@ -1544,56 +1544,72 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    /// The derivative must be the slope of the segment the point falls in.
-    /// The test above only probes the first segment, where the two agree.
+    /// Forward-mode tangent of `r = interp1d(xs, ys, z)` with respect to the
+    /// state `z`, the path a Jacobian takes. `run_interp1d_autodiff` checks
+    /// gradients only when the backend supports reverse mode, so it never
+    /// reaches Cranelift's forward tangent; this does.
+    fn run_interp1d_state_tangent<
+        M: CodegenModuleCompile + CodegenModuleJit,
+        T: Scalar + RelativeEq,
+    >(
+        z: f64,
+        value: f64,
+        slope: f64,
+    ) {
+        let text = format!(
+            "
+                xs_i {{ 0.0, 10.0, 20.0 }}
+                ys_i {{ 1.0,  5.0, 15.0 }}
+                u {{ z = {z} }}
+                r {{ interp1d(xs_i, ys_i, z) }}
+                F {{ r }}
+                out {{ z }}
+            "
+        );
+        let model = parse_ds_string(&text).unwrap();
+        let discrete_model = DiscreteModel::build("$name", &model).unwrap();
+        let compiler =
+            Compiler::<M, T>::from_discrete_model(&discrete_model, Default::default(), None)
+                .unwrap();
+        let mut u0 = vec![T::from_f64(z).unwrap()];
+        let mut res = vec![T::zero()];
+        let mut data = compiler.get_new_data();
+        compiler.set_u0(u0.as_mut_slice(), data.as_mut_slice());
+        compiler.rhs(T::zero(), u0.as_slice(), data.as_mut_slice(), res.as_mut_slice());
+        assert_relative_eq!(res[0], T::from_f64(value).unwrap());
+
+        let mut ddata = compiler.get_new_data();
+        let du0 = vec![T::one()];
+        let mut dres = vec![T::zero()];
+        compiler.rhs_grad(
+            T::zero(),
+            u0.as_slice(),
+            du0.as_slice(),
+            data.as_slice(),
+            ddata.as_mut_slice(),
+            res.as_slice(),
+            dres.as_mut_slice(),
+        );
+        assert_relative_eq!(dres[0], T::from_f64(slope).unwrap());
+    }
+
+    /// The tangent is the slope of the segment z falls in. z = 15 is in the
+    /// second segment, [10, 20], whose slope is 1.0; the first segment's is 0.4.
     fn test_interp1d_autodiff_input_uniform_later_segment<
         M: CodegenModuleCompile + CodegenModuleJit,
         T: Scalar + RelativeEq,
     >() {
-        // p = 15 sits in the second segment, [10, 20]: value 10, slope 1.0.
-        run_interp1d_autodiff::<M, T>(
-            "
-                in { p = 15 }
-                xs_i { 0.0, 10.0, 20.0 }
-                ys_i { 1.0,  5.0, 15.0 }
-                u_i { z = 1 }
-                F_i { z }
-                out { z }
-                r { interp1d(xs_i, ys_i, p) }
-            ",
-            15.0,
-            0.0,
-            10.0,
-            1.0,
-            0.0,
-            true,
-            true,
-        );
+        run_interp1d_state_tangent::<M, T>(15.0, 10.0, 1.0);
+        run_interp1d_state_tangent::<M, T>(5.0, 3.0, 0.4);
     }
 
-    /// Beyond the table the value is clamped, so the derivative is zero.
+    /// Beyond the table the value is clamped, so the tangent is zero.
     fn test_interp1d_autodiff_input_uniform_beyond_table<
         M: CodegenModuleCompile + CodegenModuleJit,
         T: Scalar + RelativeEq,
     >() {
-        run_interp1d_autodiff::<M, T>(
-            "
-                in { p = 25 }
-                xs_i { 0.0, 10.0, 20.0 }
-                ys_i { 1.0,  5.0, 15.0 }
-                u_i { z = 1 }
-                F_i { z }
-                out { z }
-                r { interp1d(xs_i, ys_i, p) }
-            ",
-            25.0,
-            0.0,
-            15.0,
-            0.0,
-            0.0,
-            true,
-            true,
-        );
+        run_interp1d_state_tangent::<M, T>(25.0, 15.0, 0.0);
+        run_interp1d_state_tangent::<M, T>(-5.0, 1.0, 0.0);
     }
 
     fn test_interp1d_autodiff_input_uniform<
